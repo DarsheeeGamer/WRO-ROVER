@@ -1,12 +1,12 @@
 # robot_brain.py
-# This script runs on the Raspberry Pi 4 to control a robot using Gemini and GPIO serial.
+# This script runs on the Raspberry Pi 4 to control a robot using Gemini and USB serial.
 
 import os
 import time
 import io
 import cv2  # Import OpenCV for camera access
 from PIL import Image
-import lgpio # Library for direct GPIO access
+import comms  # USB-serial communication helper (comms.py)
 import enum # For defining an Enum for actions
 
 # Updated import for Google Generative AI
@@ -19,19 +19,9 @@ from typing import Optional
 
 # --- 1. HARDWARE AND API CONFIGURATION ---
 
-# GPIO Pin Definitions for Software Serial Communication
-# These are the pins that will be used to send data to the Arduino.
-# Raspberry Pi GPIO 17 (TX) -> Arduino Pin 9 (RX)
-# Raspberry Pi GPIO 27 (RX) -> Arduino Pin 10 (TX) (This RX pin is not actively used by this script for receiving from Arduino)
-TX_PIN = 17  # Physical GPIO pin number
-RX_PIN = 27  # Physical GPIO pin number
-BAUD_RATE = 9600
-# Calculate the time it takes to transmit one bit at the specified baud rate.
-# This is important for accurate software serial communication.
-BIT_TIME = 1.0 / BAUD_RATE
-
-# Global variable for the GPIO chip handle, initialized to None.
-gpio_handle = None
+# Serial communication configuration (USB-Serial)
+SERIAL_PORT = "/dev/ttyUSB0"
+BAUD_RATE = 9600  # Must match the Arduino sketch
 
 # Default duration for movement actions if Gemini doesn't specify one or provides an invalid one.
 DEFAULT_MOVEMENT_DURATION = 3 # seconds
@@ -62,8 +52,8 @@ camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720) # Set frame height to 720
 
 if not camera.isOpened():
     print("Error: Could not open camera.")
-    # Clean up GPIO if camera fails to initialize
-    close_gpio()
+    # Clean up serial if camera fails to initialise
+    comms.close_serial()
     exit()
 else:
     # Get and print the actual resolution to confirm.
@@ -74,88 +64,16 @@ else:
     time.sleep(2)
 
 
-# --- GPIO Initialization and Communication Functions ---
-
-def init_gpio():
-    """Initializes the GPIO chip and claims the necessary pins for serial communication."""
-    global gpio_handle
-    if gpio_handle is None: # Only initialize if not already done.
-        try:
-            # Open the GPIO chip. On most Raspberry Pis, this is chip 0.
-            gpio_handle = lgpio.gpiochip_open(0)
-            # Claim the TX pin as an output pin.
-            lgpio.gpio_claim_output(gpio_handle, TX_PIN)
-            # Claim the RX pin as an input pin.
-            lgpio.gpio_claim_input(gpio_handle, RX_PIN)
-            # Set the TX pin to its idle state, which is HIGH for serial communication.
-            lgpio.gpio_write(gpio_handle, TX_PIN, 1)
-            print(f"GPIO initialized. TX (GPIO {TX_PIN}) as output, RX (GPIO {RX_PIN}) as input.")
-        except Exception as e:
-            print(f"Error initializing GPIO: {e}")
-            print("Ensure 'lgpio' library is installed and you have the necessary permissions.")
-            print("You might need to run this script with 'sudo python your_script.py'")
-            exit()
-
-def close_gpio():
-    """Cleans up GPIO resources by closing the chip and ensuring pins are in a safe state."""
-    global gpio_handle
-    if gpio_handle:
-        try:
-            # Ensure the TX pin is in a safe state (HIGH) before closing.
-            lgpio.gpio_write(gpio_handle, TX_PIN, 1)
-            lgpio.gpiochip_close(gpio_handle)
-            print("GPIO resources closed.")
-        except Exception as e:
-            print(f"Error closing GPIO resources: {e}")
-        finally:
-            gpio_handle = None # Reset the handle to None.
-
-def send_byte_software_serial(data_byte: int):
-    """
-    Sends a single byte (an integer from 0-255) to the Arduino using software serial protocol
-    over the configured TX_PIN. This function implements the timing for start bit, data bits, and stop bit.
-    """
-    global gpio_handle
-    if gpio_handle is None:
-        print("GPIO not initialized. Cannot send byte.")
-        return
-
-    # --- Send Start Bit (LOW state for BIT_TIME duration) ---
-    lgpio.gpio_write(gpio_handle, TX_PIN, 0)
-    time.sleep(BIT_TIME)
-
-    # --- Send Data Bits (LSB first) ---
-    # Iterate through each bit of the byte.
-    for i in range(8):
-        # Extract the i-th bit (0 or 1).
-        bit = (data_byte >> i) & 1
-        # Set the TX pin to the value of the bit.
-        lgpio.gpio_write(gpio_handle, TX_PIN, bit)
-        # Wait for the duration of one bit to ensure data integrity.
-        time.sleep(BIT_TIME)
-
-    # --- Send Stop Bit (HIGH state for BIT_TIME duration) ---
-    lgpio.gpio_write(gpio_handle, TX_PIN, 1)
-    time.sleep(BIT_TIME)
+# --- GPIO no longer used ---
 
 def send_command_to_arduino(command: str):
-    """
-    Sends a single character command to the Arduino by converting it to its ASCII value
-    and transmitting it using the software serial protocol.
-    """
+    """Forward a one-byte command to the Arduino over USB serial."""
     if not command or len(command) != 1:
         print(f"Warning: Invalid command '{command}'. Expected a single character.")
         return
-   
-    # Convert the character command to its ASCII integer representation.
-    ascii_value = ord(command)
-    send_byte_software_serial(ascii_value)
-   
-    # Add a small delay after sending the command. This helps ensure the Arduino has
-    # time to process the command and stop any previous movement before the next command is sent.
-    # This is crucial for sequential movements where the Arduino might still be running
-    # a previous command when the next command is transmitted.
-    time.sleep(0.05) # A short delay is usually sufficient for communication
+
+    comms.send_command(command)
+    time.sleep(0.05)  # Brief pause to let Arduino act
 
 # --- 2. DEFINE THE ROBOT'S ACTIONS (TOOLS) ---
 # These are Python functions that will be called based on Gemini's structured output.
@@ -262,7 +180,7 @@ def main():
     5. Repeats.
     """
     global camera # Declare intent to use and modify the global 'camera' variable
-    init_gpio() # Ensure GPIO is initialized before starting the loop.
+    comms.init_serial()  # Open USB serial
 
     try:
         while True:
@@ -402,10 +320,10 @@ def main():
     except KeyboardInterrupt:
         print("\nProgram terminated by user.")
     finally:
-        # Ensure all resources (camera, GPIO) are cleaned up when the program exits.
+        # Ensure all resources (camera, serial) are cleaned up when the program exits.
         if camera and camera.isOpened(): # Simplified check
             camera.release() # Release the camera resource
-        close_gpio()
+        comms.close_serial()
         print("Robot program finished. Resources cleaned up.")
 
 if __name__ == "__main__":
