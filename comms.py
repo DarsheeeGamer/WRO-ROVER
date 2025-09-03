@@ -1,6 +1,13 @@
-import serial
+"""Lightweight wrapper around :pymod:`pyserial` for Arduino communication.
+
+All functions are no-ops if the port is unopened, preventing crashes during
+initialisation failures.
+"""
+
 import time
 from typing import Optional
+
+import serial
 
 # USB serial device name for the Arduino
 SERIAL_PORT = "/dev/ttyUSB0"

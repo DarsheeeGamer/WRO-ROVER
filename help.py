@@ -1,27 +1,23 @@
 # robot_brain.py
 # This script runs on the Raspberry Pi 4 to control a robot using Gemini and USB serial.
 
+import io
 import os
 import time
-import io
-import cv2  # Import OpenCV for camera access
-from PIL import Image
-import comms  # USB-serial communication helper (comms.py)
-import enum # For defining an Enum for actions
+from typing import Optional
 
-# Updated import for Google Generative AI
+import enum
+
+import cv2
+from PIL import Image
 from google import genai
 from google.genai import types
-
-# Import Pydantic for structured output schema
 from pydantic import BaseModel, Field
-from typing import Optional
+
+import comms
 
 # --- 1. HARDWARE AND API CONFIGURATION ---
 
-# Serial communication configuration (USB-Serial)
-SERIAL_PORT = "/dev/ttyUSB0"
-BAUD_RATE = 9600  # Must match the Arduino sketch
 
 # Default duration for movement actions if Gemini doesn't specify one or provides an invalid one.
 DEFAULT_MOVEMENT_DURATION = 3 # seconds
