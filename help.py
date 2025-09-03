@@ -15,6 +15,15 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 import comms
+import logging
+import builtins
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+# Route all existing print calls to the module logger for consistency.
+builtins.print = lambda *args, **kwargs: logger.info(" ".join(map(str, args)))
 
 # --- 1. HARDWARE AND API CONFIGURATION ---
 

@@ -4,10 +4,13 @@ All functions are no-ops if the port is unopened, preventing crashes during
 initialisation failures.
 """
 
+import logging
 import time
 from typing import Optional
 
 import serial
+
+logger = logging.getLogger(__name__)
 
 # USB serial device name for the Arduino
 SERIAL_PORT = "/dev/ttyUSB0"
@@ -24,7 +27,7 @@ def init_serial(port: str = SERIAL_PORT, baud_rate: int = BAUD_RATE) -> None:
         _serial = serial.Serial(port, baud_rate, timeout=1)
         # Give the port some time to stabilise (recommended for some USB-UART chips)
         time.sleep(2)
-        print(f"Serial connection opened on {port} @ {baud_rate} baud.")
+        logger.info("Serial connection opened on %s @ %s baud.", port, baud_rate)
 
 
 def close_serial() -> None:
@@ -32,7 +35,7 @@ def close_serial() -> None:
     global _serial
     if _serial and _serial.is_open:
         _serial.close()
-        print("Serial connection closed.")
+        logger.info("Serial connection closed.")
     _serial = None
 
 
@@ -43,11 +46,11 @@ def send_command(cmd: str) -> None:
         cmd: Exactly one ASCII character.
     """
     if not cmd or len(cmd) != 1:
-        print(f"Invalid command '{cmd}'. Must be a single character.")
+        logger.warning("Invalid command '%s'. Must be a single character.", cmd)
         return
 
     if _serial is None or not _serial.is_open:
-        print("Serial connection not initialised. Call init_serial() first.")
+        logger.warning("Serial connection not initialised. Call init_serial() first.")
         return
 
     _serial.write(cmd.encode("ascii"))
