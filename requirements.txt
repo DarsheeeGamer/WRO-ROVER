@@ -1,0 +1,13 @@
+# Core runtime for Google AI SDK
+google-genai
+
+# Data models
+pydantic
+
+# Computer vision stack
+opencv-python
+numpy
+pillow
+
+# Serial communication with Arduino/Microcontrollers
+pyserial
