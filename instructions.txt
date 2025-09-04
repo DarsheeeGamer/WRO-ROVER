@@ -1,0 +1,54 @@
+Steps to be followed to calibrate two USB cameras to support Stereo Vision(depth determination) applications.
+
+Configuring USB cameras:
+=========================================================
+(1). Put both the cameras in perfect horizontal and vertical alignment as possible with some baseline(say 15 CM between the both the cameras lens centers). Fix them with a tape strongly. 
+(2). Connect both these cameras to a laptop or desktop via USB ports.
+(3). To determine which camera index is related to which attached USB camera, run the 00.TestCamera.py code by changing the camera_index in the main block from 0 to 4.
+         To run this code, open Jupyter Notebook and run it by trying camera index from 0 to 4. 
+         By default Camera index 0 is assigned to in-built web cam for the desktop or laptop. 
+      Note down camera indicies for both the left and right USC cameras.
+
+
+
+Camera(s) Calibration for Intrinsic parameters determination
+==========================================
+(4). Take the print out of a Checker board image and paste it onto a hard and flat surface(say with a pure white background)
+       I used 8 rows and 11 columns checkerboard image. And each grid size is 2.5 CMs by 2.5 CMs.
+
+(5). To calibrate a Camera, change the camera index in the  01.CaptureCalibrationImages.py file with correct related camera index. Also change the value of images_dir to appropriate name. 
+                Ex: images_dir = "calibration1_images" or to "calibration2_images"
+(6). Now run the 01.CaptureCalibrationImages.py file to capture the images of the checkerboard so that checkerboard is positioned in various orientations and distances , but always all the checkerboard image is within the camera field of view. After a coupe of minutes of this code module run, press key "q" to exit the application. 
+(7). Check in the images_dir folder and remove any blurry images or images without the entire checker board within the camera frame. 
+(8). Now run 02.CalibrateCamera.py file after chaging the following parameter values in this file.
+                               chessboardSize = (7,10)
+                               squareSize = 2.5                                # In cm
+                               images = glob.glob('calibration1_images/*)
+             Chessboard size is determined by (number of rows-1) and (number of columns-1)
+             We used 8 rows and 11 columns checkerboard image. So used (7,10) as the chess board size. 
+             We used 2.5 CM as the square size.     
+             For Camera1 calibration we use captured images from "calibration1_images" folder
+  Once you run this code module, you will see a message that "Calibration is Successful". This run will also save the camera intrinsic values into files named "Calib1_results.npz" and "Calib2_results.npz" .
+
+Repeat the steps (5) to (8) for the 2nd camera also by changng appropriate 
+
+
+Camera(s) Calibration for Intrinsic parameters determination
+==========================================
+(9). Now plug-in both the cameras and run the "03.CaptureStereoImages.py" file to capture the images of checkboard at the same time. After taking 20 to 30 pair of images, press key "q" to close the application run. This step will create a set of pair of images prefixed by "left*.jpg" and "right_*.jpg" under the "stereo_images" folder. 
+(10). Check the pair of images within the "stereo_images" folder and deleted any blurry or images without the entire checker board within the both the cameras' frames. 
+(11). Now to determine stereo vision parameters, run the python code "04.CalibrateStereoVision.py".  Thats it you finished the cameras calibration for stereo vision. 
+(12). Note: The Translation vector will print the number of units of baseline determined, and not the actual base line in CMs. For example, ideally one should get a value of 6 for 15 cms baseline distance between the two USB cameras lenses centers. I got around 6.2 in my sample test. Try to recalibrate the cameras to get this value as close as 6. 
+
+
+
+Testing Depth/Distance determination:
+===========================
+(13). Using both the left and right cams, take the photo of an object at the same time. 
+         Name them as left.jpg and right.jpg
+(14). Now change the reference image files names within the "06.EstimateDepth.py" code as above.
+(15). Now run the "06.EstimateDepth.py" code module to get the distance of the object from the cameras center. 
+
+Completed Successfully. 
+
+
