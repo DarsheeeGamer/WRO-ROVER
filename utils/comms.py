@@ -14,13 +14,30 @@ to abstract away the complexities of direct serial port management.
 import logging
 import time
 from typing import Optional
+import os
 
 import serial
 
 logger = logging.getLogger(__name__)
 
-# On Linux, this is typically /dev/ttyACM0 or /dev/ttyUSB0. You can find the correct port by checking dmesg after plugging in the Arduino.
-SERIAL_PORT = "/dev/ttyACM0"
+# Determine a sensible default serial port, with environment variable overrides.
+def _detect_default_port() -> str:
+    # Environment variables take precedence
+    env = os.environ.get("ROBOT_SERIAL_PORT") or os.environ.get("SERIAL_PORT")
+    if env:
+        return env
+    # Platform-based defaults
+    if os.name == "nt":
+        return "COM3"  # Common Arduino default on Windows
+    # POSIX: prefer /dev/ttyUSB0 if present, else fall back to /dev/ttyACM0
+    try:
+        if os.path.exists("/dev/ttyUSB0"):
+            return "/dev/ttyUSB0"
+    except Exception:
+        pass
+    return "/dev/ttyACM0"
+
+SERIAL_PORT = _detect_default_port()
 BAUD_RATE = 9600
 
 # Internal handle for the opened serial port
@@ -35,8 +52,10 @@ def init_serial(port: str = SERIAL_PORT, baud_rate: int = BAUD_RATE) -> None:
     which is often recommended for USB-to-serial converters.
 
     Args:
-        port (str): The serial port to connect to (e.g., '/dev/ttyACM0' on Linux,
-                    'COM3' on Windows).
+        port (str): The serial port to connect to.
+            Detection order:
+            1) ROBOT_SERIAL_PORT or SERIAL_PORT env var (if set)
+            2) Windows: COM3; POSIX: /dev/ttyUSB0 if present, else /dev/ttyACM0
         baud_rate (int): The baud rate for the serial communication (e.g., 9600).
     """
     global _serial

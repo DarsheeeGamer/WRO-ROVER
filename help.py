@@ -15,7 +15,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
-import comms
+from utils import comms
 import logging
 import builtins
 
@@ -53,16 +53,19 @@ Stereo calibration loading and camera initialization
 # Load stereo calibration data
 def _load_stereo_calibration():
     calib = {}
+    calib_dir = os.path.join(os.path.dirname(__file__), 'calibration')
+    sf_path = os.path.join(calib_dir, 'stereo_full.npz')
     try:
-        sf = np.load('stereo_full.npz', allow_pickle=True)
+        sf = np.load(sf_path, allow_pickle=True)
         for k in sf.files:
             calib[k] = sf[k]
         print("Loaded stereo_full.npz calibration.")
     except Exception as e:
         print(f"Warning: Failed to load stereo_full.npz: {e}")
     for fname, prefix in [("calib_left.npz", "left_"), ("calib_right.npz", "right_")]:
+        fpath = os.path.join(calib_dir, fname)
         try:
-            f = np.load(fname, allow_pickle=True)
+            f = np.load(fpath, allow_pickle=True)
             for k in f.files:
                 calib[prefix + k] = f[k]
             print(f"Loaded {fname} calibration.")
@@ -94,25 +97,41 @@ _Q  = _g(_stereo_calib, ["Q"])
 _maps_ready = False
 _map1x = _map1y = _map2x = _map2y = None
 
-# Open stereo cameras
-left_camera = cv2.VideoCapture(0)
-right_camera = cv2.VideoCapture(1)
+def _open_stereo_cameras():
+    """Try common index pairs and return opened (left, right) VideoCapture objects.
+    Tries: (0,1), (0,2), (1,2).
+    """
+    # Prefer front stereo pair: left=0, right=2 as per user setup
+    candidates = [(0, 2), (0, 1), (1, 2)]
+    for li, ri in candidates:
+        L = cv2.VideoCapture(li)
+        R = cv2.VideoCapture(ri)
+        for cam in (L, R):
+            cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        if L.isOpened() and R.isOpened():
+            print(f"Opened stereo cameras on indices left={li}, right={ri}")
+            return L, R
+        # cleanup if failed and try next
+        try:
+            L.release(); R.release()
+        except Exception:
+            pass
+    raise RuntimeError("Could not open any valid pair of stereo cameras.")
 
-for cam in (left_camera, right_camera):
-    cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-if not left_camera.isOpened() or not right_camera.isOpened():
-    print("Error: Could not open both stereo cameras (indices 0 and 1).")
-    comms.close_serial()
-    exit()
-else:
+# Open stereo cameras (robust)
+try:
+    left_camera, right_camera = _open_stereo_cameras()
     lw = int(left_camera.get(cv2.CAP_PROP_FRAME_WIDTH))
     lh = int(left_camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
     rw = int(right_camera.get(cv2.CAP_PROP_FRAME_WIDTH))
     rh = int(right_camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"Stereo cameras initialized. Left: {lw}x{lh}, Right: {rw}x{rh}")
     time.sleep(2)
+except Exception as e:
+    print(f"Error: {e}")
+    comms.close_serial()
+    exit()
 
 # Stereo matcher (tuned modestly for speed)
 _stereo_matcher = cv2.StereoSGBM_create(
@@ -257,6 +276,82 @@ def stop_moving_action():
     send_command_to_arduino('S')  # Send command to stop
     return {"status": "success", "action": "stop_moving"}
 
+def set_rotate_mode_on_action():
+    """Enable rotate-in-place mode on the Arduino (state = 1)."""
+    print("Executing: Set Rotate Mode ON.")
+    send_command_to_arduino('X')
+    return {"status": "success", "action": "set_rotate_mode_on"}
+
+def set_rotate_mode_off_action():
+    """Disable rotate-in-place mode on the Arduino (state = 0)."""
+    print("Executing: Set Rotate Mode OFF.")
+    send_command_to_arduino('x')
+    return {"status": "success", "action": "set_rotate_mode_off"}
+
+def rotate_right_action(duration: int):
+    """Rotate in place to the right for duration seconds, then stop."""
+    print(f"Executing: Rotate Right for {duration} seconds.")
+    send_command_to_arduino('X')  # ensure rotate mode ON
+    send_command_to_arduino('R')
+    time.sleep(duration)
+    send_command_to_arduino('S')
+    return {"status": "success", "action": "rotate_right", "duration": duration}
+
+def rotate_left_action(duration: int):
+    """Rotate in place to the left for duration seconds, then stop."""
+    print(f"Executing: Rotate Left for {duration} seconds.")
+    send_command_to_arduino('X')  # ensure rotate mode ON
+    send_command_to_arduino('L')
+    time.sleep(duration)
+    send_command_to_arduino('S')
+    return {"status": "success", "action": "rotate_left", "duration": duration}
+
+def right_action(duration: int):
+    """Turn/move right (non-rotate mode) for duration seconds, then stop."""
+    print(f"Executing: Right for {duration} seconds.")
+    send_command_to_arduino('x')  # ensure rotate mode OFF
+    send_command_to_arduino('R')
+    time.sleep(duration)
+    send_command_to_arduino('S')
+    return {"status": "success", "action": "right", "duration": duration}
+
+def left_action(duration: int):
+    """Turn/move left (non-rotate mode) for duration seconds, then stop."""
+    print(f"Executing: Left for {duration} seconds.")
+    send_command_to_arduino('x')  # ensure rotate mode OFF
+    send_command_to_arduino('L')
+    time.sleep(duration)
+    send_command_to_arduino('S')
+    return {"status": "success", "action": "left", "duration": duration}
+
+def move_forward_left_action(duration: int):
+    print(f"Executing: Forward Left for {duration} seconds.")
+    send_command_to_arduino('G')
+    time.sleep(duration)
+    send_command_to_arduino('S')
+    return {"status": "success", "action": "move_forward_left", "duration": duration}
+
+def move_forward_right_action(duration: int):
+    print(f"Executing: Forward Right for {duration} seconds.")
+    send_command_to_arduino('I')
+    time.sleep(duration)
+    send_command_to_arduino('S')
+    return {"status": "success", "action": "move_forward_right", "duration": duration}
+
+def move_backward_left_action(duration: int):
+    print(f"Executing: Backward Left for {duration} seconds.")
+    send_command_to_arduino('H')
+    time.sleep(duration)
+    send_command_to_arduino('S')
+    return {"status": "success", "action": "move_backward_left", "duration": duration}
+
+def move_backward_right_action(duration: int):
+    print(f"Executing: Backward Right for {duration} seconds.")
+    send_command_to_arduino('J')
+    time.sleep(duration)
+    send_command_to_arduino('S')
+    return {"status": "success", "action": "move_backward_right", "duration": duration}
+
 # A dictionary to map string action names from the Pydantic model to their corresponding Python functions.
 AVAILABLE_ACTIONS = {
     "move_forward": move_forward_action,
@@ -264,7 +359,21 @@ AVAILABLE_ACTIONS = {
     "turn_left": turn_left_action,
     "turn_right": turn_right_action,
     "stop_moving": stop_moving_action,
+    # Extended actions for rotate mode and directional control
+    "set_rotate_mode_on": set_rotate_mode_on_action,
+    "set_rotate_mode_off": set_rotate_mode_off_action,
+    "rotate_right": rotate_right_action,
+    "rotate_left": rotate_left_action,
+    "right": right_action,
+    "left": left_action,
+    "move_forward_left": move_forward_left_action,
+    "move_forward_right": move_forward_right_action,
+    "move_backward_left": move_backward_left_action,
+    "move_backward_right": move_backward_right_action,
 }
+
+# Actions that do not require a duration parameter
+NO_DURATION_ACTIONS = {"stop_moving", "set_rotate_mode_on", "set_rotate_mode_off"}
 
 # --- 3. DEFINE PYDANTIC MODEL FOR STRUCTURED OUTPUT ---
 # This model describes the JSON structure we expect from Gemini.
@@ -276,6 +385,17 @@ class RobotActionEnum(str, enum.Enum):
     TURN_LEFT = "turn_left"
     TURN_RIGHT = "turn_right"
     STOP_MOVING = "stop_moving"
+    # Extended
+    SET_ROTATE_MODE_ON = "set_rotate_mode_on"
+    SET_ROTATE_MODE_OFF = "set_rotate_mode_off"
+    ROTATE_RIGHT = "rotate_right"
+    ROTATE_LEFT = "rotate_left"
+    RIGHT = "right"
+    LEFT = "left"
+    MOVE_FORWARD_LEFT = "move_forward_left"
+    MOVE_FORWARD_RIGHT = "move_forward_right"
+    MOVE_BACKWARD_LEFT = "move_backward_left"
+    MOVE_BACKWARD_RIGHT = "move_backward_right"
 
 class RobotCommand(BaseModel):
     """
@@ -303,7 +423,17 @@ def main():
     5. Repeats.
     """
     global left_camera, right_camera  # Access and potentially rebind stereo cameras
-    comms.init_serial()  # Open USB serial
+    comms.init_serial("/dev/ttyUSB0")  # Open USB serial on explicit port
+
+    # Ask user for the initial navigation goal (free-form natural language)
+    try:
+        mission_goal = input(
+            "Enter your navigation goal (e.g., 'move near the person in red shirt' or 'go to the blue box'): "
+        ).strip()
+        if not mission_goal:
+            mission_goal = "Navigate safely forward and avoid obstacles."
+    except Exception:
+        mission_goal = "Navigate safely forward and avoid obstacles."
 
     try:
         while True:
@@ -320,13 +450,10 @@ def main():
                 except Exception:
                     pass
                 time.sleep(2)
-                left_camera = cv2.VideoCapture(0)
-                right_camera = cv2.VideoCapture(1)
-                for cam in (left_camera, right_camera):
-                    cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                    cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                if not left_camera.isOpened() or not right_camera.isOpened():
-                    print("Error: Failed to re-initialize stereo cameras. Exiting.")
+                try:
+                    left_camera, right_camera = _open_stereo_cameras()
+                except Exception as e:
+                    print(f"Error: Failed to re-initialize stereo cameras: {e}")
                     break
                 continue
 
@@ -361,13 +488,20 @@ def main():
                 "Analyze this image from my point of view and decide the next action to take. "
                 "You MUST respond with a JSON object containing an 'action' field and, if "
                 "it's a movement action, a 'duration' field. "
-                "Possible actions are 'move_forward', 'move_backward', 'turn_left', 'turn_right', or 'stop_moving'. "
+                "Possible actions are 'move_forward', 'move_backward', 'turn_left', 'turn_right', 'stop_moving', "
+                "'set_rotate_mode_on', 'set_rotate_mode_off', 'rotate_right', 'rotate_left', 'right', 'left', "
+                "'move_forward_left', 'move_forward_right', 'move_backward_left', 'move_backward_right'. "
                 "For movement actions, the duration should be a positive integer in seconds (e.g., 3). "
                 "If the path ahead is clear, choose 'move_forward'. "
                 "If there is an obstacle, decide whether to 'turn_left' or 'turn_right' to avoid it. "
                 "If the path is blocked, the image is too unclear to make a confident movement, "
                 "or no movement is necessary, choose 'stop_moving'. "
                 "ALWAYS provide a 'duration' for movement actions (move_forward, move_backward, turn_left, turn_right)."
+            )
+            # Provide context about goal and camera orientation
+            prompt_text += (
+                f" Goal: {mission_goal}. If the target is not visible yet, cautiously explore to locate it while avoiding obstacles. "
+                " The stereo cameras are front-facing (left index 0, right index 2)."
             )
             if distance_m is not None:
                 prompt_text += f" The estimated forward distance is about {distance_m:.2f} meters; consider this when choosing the action."
@@ -384,8 +518,10 @@ def main():
                         "You *must* respond with a JSON object that strictly adheres to the provided schema: "
                         "{'action': 'RobotActionEnum', 'duration': Optional[int]}. "
                         "Always analyze the image and select the most appropriate single action from "
-                        "['move_forward', 'move_backward', 'turn_left', 'turn_right', 'stop_moving']. "
-                        "For any action other than 'stop_moving', you *must* include a 'duration' in seconds. "
+                        "['move_forward', 'move_backward', 'turn_left', 'turn_right', 'stop_moving', "
+                        " 'set_rotate_mode_on', 'set_rotate_mode_off', 'rotate_right', 'rotate_left', 'right', 'left', "
+                        " 'move_forward_left', 'move_forward_right', 'move_backward_left', 'move_backward_right']. "
+                        "For any action that causes motion (i.e., not 'stop_moving' or rotate-mode toggles), you *must* include a 'duration' in seconds. "
                         "If the path is clear, prioritize moving forward. If blocked, prioritize turning. "
                         "If unable to move or path is unclear, always choose 'stop_moving'."
                     )
@@ -424,7 +560,7 @@ def main():
                     if action_name in AVAILABLE_ACTIONS:
                         action_function = AVAILABLE_ACTIONS[action_name]
                        
-                        if action_name == RobotActionEnum.STOP_MOVING.value:
+                        if action_name in NO_DURATION_ACTIONS:
                             result = action_function()
                         else: # Movement actions
                             duration = robot_command.duration
