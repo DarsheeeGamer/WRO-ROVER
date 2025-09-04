@@ -1,5 +1,15 @@
-# robot_brain.py
-# This script runs on the Raspberry Pi 4 to control a robot using Gemini and USB serial.
+"""robot_brain.py
+This script serves as the central control unit for the robot, integrating Gemini AI for intelligent decision-making and managing hardware interactions via USB serial communication.
+
+It handles:
+- Gemini API configuration and interaction.
+- Stereo camera initialization and image acquisition.
+- Loading of stereo calibration data for accurate depth perception.
+- Computation of real-world distances from stereo camera feeds.
+- Sending commands to the Arduino for robot movement and actions.
+
+This script is designed to run on a powerful computing platform (e.g., a laptop running Ubuntu Server) that can handle both AI processing and camera stream processing.
+"""
 
 import io
 import os
@@ -30,7 +40,14 @@ builtins.print = lambda *args, **kwargs: logger.info(" ".join(map(str, args)))
 
 
 # Default duration for movement actions if Gemini doesn't specify one or provides an invalid one.
-DEFAULT_MOVEMENT_DURATION = 3 # seconds
+DEFAULT_MOVEMENT_DURATION = 3  # seconds
+
+# --- 2. GEMINI API INITIALIZATION ---
+
+# Configure the Gemini client using the API key
+# It's highly recommended to load API keys from environment variables for security.
+# For example: API_KEY = os.getenv("GOOGLE_API_KEY")
+# For now, it's hardcoded as in your original snippet:
 
 # Configure the Gemini client using the API key
 try:
@@ -46,12 +63,23 @@ except Exception as e:
     print("and that the GOOGLE_API_KEY environment variable is set.")
     exit()
 
+# --- 3. STEREO CAMERA CALIBRATION AND INITIALIZATION ---
+
 """
-Stereo calibration loading and camera initialization
+Functions and variables related to loading stereo calibration data and initializing cameras.
 """
 
 # Load stereo calibration data
 def _load_stereo_calibration():
+    """Loads stereo calibration parameters from various .npz files.
+
+    It attempts to load from 'stereo_full.npz', 'calib_left.npz', and 'calib_right.npz'.
+    These files contain camera matrices, distortion coefficients, and rectification parameters
+    necessary for stereo vision.
+
+    Returns:
+        dict: A dictionary containing all loaded calibration parameters.
+    """
     calib = {}
     try:
         sf = np.load('stereo_full.npz', allow_pickle=True)
@@ -74,6 +102,15 @@ _stereo_calib = _load_stereo_calibration()
 
 # Helper to get first present key
 def _g(d, keys):
+    """Helper function to retrieve a value from a dictionary given a list of possible keys.
+
+    Args:
+        d (dict): The dictionary to search within.
+        keys (list): A list of keys to try, in order of preference.
+
+    Returns:
+        Any: The value associated with the first found key, or None if no key is found.
+    """
     for k in keys:
         if k in d:
             return d[k]
@@ -93,6 +130,11 @@ _Q  = _g(_stereo_calib, ["Q"])
 # Rectification maps (lazy-built on first frame if matrices exist)
 _maps_ready = False
 _map1x = _map1y = _map2x = _map2y = None
+
+# Open stereo cameras
+# Camera indices (0 and 1) might vary depending on the system and camera connection order.
+# Ensure these correspond to your left and right cameras.
+
 
 # Open stereo cameras
 left_camera = cv2.VideoCapture(0)
@@ -115,6 +157,7 @@ else:
     time.sleep(2)
 
 # Stereo matcher (tuned modestly for speed)
+# Parameters are set for a balance between accuracy and performance.
 _stereo_matcher = cv2.StereoSGBM_create(
     minDisparity=0,
     numDisparities=16*6,  # must be divisible by 16
@@ -128,6 +171,15 @@ _stereo_matcher = cv2.StereoSGBM_create(
 )
 
 def _ensure_rectification_maps(frame_shape):
+    """Ensures that stereo rectification maps are prepared.
+
+    These maps are used to undistort and rectify stereo image pairs,
+    making their epipolar lines horizontal and simplifying disparity calculation.
+    This function is called lazily on the first frame processing.
+
+    Args:
+        frame_shape (tuple): The shape of the input image frames (height, width, channels).
+    """
     global _maps_ready, _map1x, _map1y, _map2x, _map2y
     if _maps_ready:
         return
@@ -144,9 +196,20 @@ def _ensure_rectification_maps(frame_shape):
     print("Rectification maps prepared.")
 
 
-# --- GPIO no longer used ---
+# --- 4. ARDUINO COMMUNICATION FUNCTIONS ---
+
+# GPIO no longer used directly in this script; communication is via serial.
 
 def send_command_to_arduino(command: str):
+    """Sends a single-character command to the Arduino over USB serial.
+
+    This function acts as an intermediary, using the `comms` module to send
+    commands to the connected Arduino, which then executes the corresponding action.
+
+    Args:
+        command (str): A single ASCII character representing the command to send.
+                       e.g., 'F' for forward, 'B' for backward, 'L' for left, 'R' for right.
+    """
     """Forward a one-byte command to the Arduino over USB serial."""
     if not command or len(command) != 1:
         print(f"Warning: Invalid command '{command}'. Expected a single character.")
@@ -157,6 +220,22 @@ def send_command_to_arduino(command: str):
 
 
 def compute_distance_meters(left_bgr, right_bgr) -> Optional[float]:
+    """Computes the forward distance to objects using stereo disparity and calibration data.
+
+    This function takes rectified stereo image pairs, computes their disparity map,
+    and then reprojects them into 3D space using the loaded stereo calibration parameters.
+    The median Z-coordinate (depth) in a central Region of Interest (ROI) is returned
+    as the estimated distance.
+
+    Args:
+        left_bgr (np.array): The BGR image frame from the left camera.
+        right_bgr (np.array): The BGR image frame from the right camera.
+
+    Returns:
+        Optional[float]: The estimated distance in meters to the object in the central ROI,
+                         or None if the distance cannot be computed (e.g., invalid frames,
+                         missing calibration, or no valid disparity).
+    """
     """Compute forward distance using stereo disparity and calibration.
 
     Returns median Z (meters) in a central ROI, or None if unavailable.

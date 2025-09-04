@@ -1,6 +1,26 @@
+"""calibrate_arm.py
+This script provides a comprehensive solution for stereo camera calibration using a checkerboard pattern.
+It is specifically designed for calibrating the mini cameras intended for a robotic arm.
+
+The calibration process involves:
+1. Capturing image pairs from the left and right cameras.
+2. Detecting checkerboard corners in the captured images.
+3. Performing individual camera calibrations for intrinsic parameters.
+4. Performing stereo calibration to determine the extrinsic relationship between the two cameras.
+5. Saving the calibration results to a NumPy `.npz` file for later use in 3D reconstruction and distance measurement.
+
+Before running, ensure you have:
+- OpenCV (`opencv-python`) and NumPy installed (`pip install opencv-python numpy`).
+- A physical checkerboard with known dimensions.
+- Two cameras connected and accessible (typically at indices 0 and 1).
+
+Adjust `CHECKERBOARD` and `SQUARE_SIZE` variables according to your checkerboard.
+"""
+
 import numpy as np
 import glob
 import os
+import cv2
 
 # --- Configuration ---
 # The dimensions of your checkerboard (number of inner corners)
@@ -14,8 +34,13 @@ NUM_IMAGES_TO_CAPTURE = 25
 # --- End Configuration ---
 
 def calibrate_stereo_cameras():
-    """
-    Performs stereo camera calibration using a checkerboard pattern.
+    """Performs stereo camera calibration using a checkerboard pattern.
+
+    This function guides the user through capturing image pairs, detecting checkerboard
+    corners, and then performing both individual camera calibrations and stereo calibration.
+    The results are saved to `stereo_cal_arm.npz`.
+
+    Requires: OpenCV (`cv2`) and NumPy (`np`).
     """
     print("Starting stereo camera calibration...")
 

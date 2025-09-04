@@ -1,7 +1,14 @@
-"""Lightweight wrapper around :pymod:`pyserial` for Arduino communication.
+"""comms.py
+This module provides a lightweight and robust wrapper around the `pyserial` library,
+facilitating reliable serial communication with an Arduino or similar microcontroller.
 
-All functions are no-ops if the port is unopened, preventing crashes during
-initialisation failures.
+It handles:
+- Initializing and closing the serial connection.
+- Sending single-character commands to the connected device.
+- Graceful handling of unopened ports to prevent crashes.
+
+This module is designed to be used by the main robot control script (`robot_brain.py`)
+to abstract away the complexities of direct serial port management.
 """
 
 import logging
@@ -21,7 +28,17 @@ _serial: Optional[serial.Serial] = None
 
 
 def init_serial(port: str = SERIAL_PORT, baud_rate: int = BAUD_RATE) -> None:
-    """Open the serial connection if it is not already open."""
+    """Initializes and opens the serial connection to the Arduino.
+
+    If the serial port is already open, this function does nothing.
+    It also includes a brief delay after opening to allow the port to stabilize,
+    which is often recommended for USB-to-serial converters.
+
+    Args:
+        port (str): The serial port to connect to (e.g., '/dev/ttyACM0' on Linux,
+                    'COM3' on Windows).
+        baud_rate (int): The baud rate for the serial communication (e.g., 9600).
+    """
     global _serial
     if _serial is None or not _serial.is_open:
         _serial = serial.Serial(port, baud_rate, timeout=1)
@@ -31,7 +48,11 @@ def init_serial(port: str = SERIAL_PORT, baud_rate: int = BAUD_RATE) -> None:
 
 
 def close_serial() -> None:
-    """Close the serial connection cleanly."""
+    """Closes the serial connection cleanly.
+
+    If the serial port is open, it will be closed. If it's already closed or was never
+    initialized, this function does nothing.
+    """
     global _serial
     if _serial and _serial.is_open:
         _serial.close()
@@ -40,10 +61,14 @@ def close_serial() -> None:
 
 
 def send_command(cmd: str) -> None:
-    """Send a single-character command to the Arduino.
+    """Sends a single-character command to the connected Arduino.
+
+    This function ensures that the command is a single ASCII character and that
+    the serial connection is active before attempting to write.
 
     Args:
-        cmd: Exactly one ASCII character.
+        cmd (str): The single ASCII character command to send.
+                   If the command is not a single character, a warning is logged.
     """
     if not cmd or len(cmd) != 1:
         logger.warning("Invalid command '%s'. Must be a single character.", cmd)
