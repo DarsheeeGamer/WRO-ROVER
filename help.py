@@ -9,6 +9,7 @@ from typing import Optional
 import enum
 
 import cv2
+import numpy as np
 from PIL import Image
 from google import genai
 from google.genai import types
@@ -45,28 +46,102 @@ except Exception as e:
     print("and that the GOOGLE_API_KEY environment variable is set.")
     exit()
 
-# --- Camera Initialization ---
-# Use OpenCV to capture frames from the camera. '0' typically refers to the default camera.
-camera = cv2.VideoCapture(0) # Use cam0
+"""
+Stereo calibration loading and camera initialization
+"""
 
-# Set camera properties to 720p (1280x720) resolution.
-# Note: Not all cameras or Raspberry Pi configurations may support 720p directly.
-# If you encounter issues, you might need to adjust these values or the camera module.
-camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280) # Set frame width to 1280
-camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720) # Set frame height to 720
+# Load stereo calibration data
+def _load_stereo_calibration():
+    calib = {}
+    try:
+        sf = np.load('stereo_full.npz', allow_pickle=True)
+        for k in sf.files:
+            calib[k] = sf[k]
+        print("Loaded stereo_full.npz calibration.")
+    except Exception as e:
+        print(f"Warning: Failed to load stereo_full.npz: {e}")
+    for fname, prefix in [("calib_left.npz", "left_"), ("calib_right.npz", "right_")]:
+        try:
+            f = np.load(fname, allow_pickle=True)
+            for k in f.files:
+                calib[prefix + k] = f[k]
+            print(f"Loaded {fname} calibration.")
+        except Exception as e:
+            print(f"Warning: Failed to load {fname}: {e}")
+    return calib
 
-if not camera.isOpened():
-    print("Error: Could not open camera.")
-    # Clean up serial if camera fails to initialise
+_stereo_calib = _load_stereo_calibration()
+
+# Helper to get first present key
+def _g(d, keys):
+    for k in keys:
+        if k in d:
+            return d[k]
+    return None
+
+# Extract matrices if present
+_K1 = _g(_stereo_calib, ["K1", "cameraMatrix1", "left_camera_matrix", "mtx1", "left_mtx"])
+_D1 = _g(_stereo_calib, ["D1", "distCoeffs1", "left_dist", "dist1", "left_distortion"])
+_K2 = _g(_stereo_calib, ["K2", "cameraMatrix2", "right_camera_matrix", "mtx2", "right_mtx"])
+_D2 = _g(_stereo_calib, ["D2", "distCoeffs2", "right_dist", "dist2", "right_distortion"])
+_R1 = _g(_stereo_calib, ["R1", "left_R"])
+_R2 = _g(_stereo_calib, ["R2", "right_R"])
+_P1 = _g(_stereo_calib, ["P1", "left_P"])
+_P2 = _g(_stereo_calib, ["P2", "right_P"])
+_Q  = _g(_stereo_calib, ["Q"])
+
+# Rectification maps (lazy-built on first frame if matrices exist)
+_maps_ready = False
+_map1x = _map1y = _map2x = _map2y = None
+
+# Open stereo cameras
+left_camera = cv2.VideoCapture(0)
+right_camera = cv2.VideoCapture(1)
+
+for cam in (left_camera, right_camera):
+    cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+if not left_camera.isOpened() or not right_camera.isOpened():
+    print("Error: Could not open both stereo cameras (indices 0 and 1).")
     comms.close_serial()
     exit()
 else:
-    # Get and print the actual resolution to confirm.
-    actual_width = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
-    actual_height = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"Camera initialized using OpenCV. Attempted resolution: 1280x720. Actual resolution: {actual_width}x{actual_height}")
-    # Give the camera a moment to warm up and stabilize.
+    lw = int(left_camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+    lh = int(left_camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    rw = int(right_camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+    rh = int(right_camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"Stereo cameras initialized. Left: {lw}x{lh}, Right: {rw}x{rh}")
     time.sleep(2)
+
+# Stereo matcher (tuned modestly for speed)
+_stereo_matcher = cv2.StereoSGBM_create(
+    minDisparity=0,
+    numDisparities=16*6,  # must be divisible by 16
+    blockSize=5,
+    P1=8*3*5*5,
+    P2=32*3*5*5,
+    disp12MaxDiff=1,
+    uniquenessRatio=10,
+    speckleWindowSize=50,
+    speckleRange=1,
+)
+
+def _ensure_rectification_maps(frame_shape):
+    global _maps_ready, _map1x, _map1y, _map2x, _map2y
+    if _maps_ready:
+        return
+    if _K1 is None or _D1 is None or _R1 is None or _P1 is None or _K2 is None or _D2 is None or _R2 is None or _P2 is None:
+        print("Rectification matrices incomplete; proceeding without rectification.")
+        _maps_ready = True  # avoid repeated warnings
+        return
+    h, w = frame_shape[:2]
+    P1nm = _P1[:, :3] if _P1 is not None and getattr(_P1, 'shape', (0, 0))[1] == 4 else _P1
+    P2nm = _P2[:, :3] if _P2 is not None and getattr(_P2, 'shape', (0, 0))[1] == 4 else _P2
+    _map1x, _map1y = cv2.initUndistortRectifyMap(_K1, _D1, _R1, P1nm, (w, h), cv2.CV_32FC1)
+    _map2x, _map2y = cv2.initUndistortRectifyMap(_K2, _D2, _R2, P2nm, (w, h), cv2.CV_32FC1)
+    _maps_ready = True
+    print("Rectification maps prepared.")
 
 
 # --- GPIO no longer used ---
@@ -79,6 +154,49 @@ def send_command_to_arduino(command: str):
 
     comms.send_command(command)
     time.sleep(0.05)  # Brief pause to let Arduino act
+
+
+def compute_distance_meters(left_bgr, right_bgr) -> Optional[float]:
+    """Compute forward distance using stereo disparity and calibration.
+
+    Returns median Z (meters) in a central ROI, or None if unavailable.
+    """
+    global _Q
+    if left_bgr is None or right_bgr is None:
+        return None
+    _ensure_rectification_maps(left_bgr.shape)
+    left_gray = cv2.cvtColor(left_bgr, cv2.COLOR_BGR2GRAY)
+    right_gray = cv2.cvtColor(right_bgr, cv2.COLOR_BGR2GRAY)
+
+    if _map1x is not None and _map1y is not None and _map2x is not None and _map2y is not None:
+        left_gray = cv2.remap(left_gray, _map1x, _map1y, cv2.INTER_LINEAR)
+        right_gray = cv2.remap(right_gray, _map2x, _map2y, cv2.INTER_LINEAR)
+
+    disp = _stereo_matcher.compute(left_gray, right_gray).astype(np.float32) / 16.0
+    if _Q is not None:
+        points_3d = cv2.reprojectImageTo3D(disp, _Q)
+        Z = points_3d[:, :, 2]
+    else:
+        # fallback using Z = f*B / d from P1,P2 if Q not present
+        if _P1 is None or _P2 is None:
+            return None
+        fx = float(_P1[0, 0])
+        B = abs(float(_P2[0, 3]) / fx) if fx != 0 else None
+        if B is None or fx == 0:
+            return None
+        with np.errstate(divide='ignore'):
+            Z = (fx * B) / disp
+
+    h, w = disp.shape
+    cx0, cx1 = int(w*0.45), int(w*0.55)
+    cy0, cy1 = int(h*0.45), int(h*0.55)
+    roi = Z[cy0:cy1, cx0:cx1]
+    # Filter invalid values
+    valid = np.isfinite(roi) & (roi > 0.05) & (roi < 10.0)
+    if not np.any(valid):
+        return None
+    med = float(np.median(roi[valid]))
+    return med
 
 # --- 2. DEFINE THE ROBOT'S ACTIONS (TOOLS) ---
 # These are Python functions that will be called based on Gemini's structured output.
@@ -184,37 +302,50 @@ def main():
     4. Executes the action by sending commands to the Arduino.
     5. Repeats.
     """
-    global camera # Declare intent to use and modify the global 'camera' variable
+    global left_camera, right_camera  # Access and potentially rebind stereo cameras
     comms.init_serial()  # Open USB serial
 
     try:
         while True:
             print("\n--- Starting new cycle ---")
 
-            # --- Capture Image from Camera using OpenCV ---
-            ret, frame = camera.read() # Read a frame from the camera
-            if not ret:
-                print("Error: Failed to capture frame from camera.")
-                # Attempt to restart camera if reading fails
-                camera.release()
-                time.sleep(2) # Wait before retrying
-                camera = cv2.VideoCapture(0) # Now this re-assigns to the global 'camera'
-                camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280) # Set width to 720p
-                camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720) # Set height to 720p
-                if not camera.isOpened():
-                    print("Error: Failed to re-initialize camera. Exiting.")
-                    break # Exit loop if camera cannot be re-initialized
-                continue # Skip to next iteration if frame capture failed but camera re-initialized
+            # --- Capture Images from Stereo Cameras ---
+            retL, left_frame = left_camera.read()
+            retR, right_frame = right_camera.read()
+            if not retL or not retR:
+                print("Error: Failed to capture frame from one or both cameras.")
+                # Attempt to restart cameras
+                try:
+                    left_camera.release(); right_camera.release()
+                except Exception:
+                    pass
+                time.sleep(2)
+                left_camera = cv2.VideoCapture(0)
+                right_camera = cv2.VideoCapture(1)
+                for cam in (left_camera, right_camera):
+                    cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                    cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                if not left_camera.isOpened() or not right_camera.isOpened():
+                    print("Error: Failed to re-initialize stereo cameras. Exiting.")
+                    break
+                continue
 
             # Convert the OpenCV frame (NumPy array) to a PIL Image, then to bytes.
             # OpenCV uses BGR color format, PIL uses RGB.
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_rgb = cv2.cvtColor(left_frame, cv2.COLOR_BGR2RGB)
             img_pil = Image.fromarray(frame_rgb)
            
             image_bytes_io = io.BytesIO()
             img_pil.save(image_bytes_io, format='jpeg')
             image_bytes = image_bytes_io.getvalue()
             print("Image captured successfully.")
+
+            # Compute distance using stereo
+            distance_m = compute_distance_meters(left_frame, right_frame)
+            if distance_m is not None:
+                print(f"Estimated forward distance: {distance_m:.2f} m")
+            else:
+                print("Estimated forward distance: unavailable")
 
             # Prepare the captured image data in a format suitable for the Gemini API.
             image_part = types.Part.from_bytes(
@@ -238,6 +369,8 @@ def main():
                 "or no movement is necessary, choose 'stop_moving'. "
                 "ALWAYS provide a 'duration' for movement actions (move_forward, move_backward, turn_left, turn_right)."
             )
+            if distance_m is not None:
+                prompt_text += f" The estimated forward distance is about {distance_m:.2f} meters; consider this when choosing the action."
            
             response = client.models.generate_content(
                 model=client_model_name,
@@ -326,8 +459,10 @@ def main():
         print("\nProgram terminated by user.")
     finally:
         # Ensure all resources (camera, serial) are cleaned up when the program exits.
-        if camera and camera.isOpened(): # Simplified check
-            camera.release() # Release the camera resource
+        if left_camera and left_camera.isOpened():
+            left_camera.release()
+        if right_camera and right_camera.isOpened():
+            right_camera.release()
         comms.close_serial()
         print("Robot program finished. Resources cleaned up.")
 
